@@ -5,8 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
@@ -32,7 +31,7 @@ jobs:
         run: |
           # 构建临时 Dockerfile（基于 Ubuntu 22.04）
           cat > Dockerfile << 'EOF'
-          FROM ubuntu:latest
+          FROM ubuntu:22.04
           ENV DEBIAN_FRONTEND=noninteractive
           RUN apt update && \
               apt install -y --no-install-recommends \
@@ -72,6 +71,7 @@ jobs:
         run: |
           FW_DIR=$(find bin/targets -type d 2>/dev/null | grep -v packages | head -n1)
           if [ -z "$FW_DIR" ]; then
+            echo "❌ No firmware found!"
             exit 1
           fi
           echo "fw_dir=$FW_DIR" >> $GITHUB_ENV
