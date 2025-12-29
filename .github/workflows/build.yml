@@ -1,63 +1,85 @@
-name: Build ChaWrt Firmware X86
+name: Build ChaWrt in Docker
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y \
-            build-essential clang flex bison g++ gawk gcc-multilib \
-            gettext git libncurses-dev libssl-dev rsync unzip \
-            zlib1g-dev file wget curl python3 python3-pip 
+      - name: Set up Docker
+        uses: docker/setup-docker-action@v3
 
-      - name: Set up build environment
-        run: |
-          if [ ! -f x86.config ]; then
-            echo "Error: x86.config not found in repository root!"
-            exit 1
-          fi
-          cp x86.config .config
+      - name: Restore cache
+        uses: actions/cache@v4
+        id: cache
+        with:
+          path: |
+            dl
+            staging_dir
+            build_dir
+          key: chawrt-docker-${{ hashFiles('x86.config') }}-${{ runner.os }}
+          restore-keys: |
+            chawrt-docker-${{ hashFiles('x86.config') }}
+            chawrt-docker-
 
-      - name: Update and install feeds
+      - name: Build in Docker container
         run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          # 构建临时 Dockerfile（基于 Ubuntu 22.04）
+          cat > Dockerfile << 'EOF'
+          FROM ubuntu:latest
+          ENV DEBIAN_FRONTEND=noninteractive
+          RUN apt update && \
+              apt install -y --no-install-recommends \
+                build-essential clang flex bison g++ gawk gcc-multilib \
+                gettext git libncurses-dev libssl-dev rsync unzip \
+                zlib1g-dev file wget curl python3 && \
+              rm -rf /var/lib/apt/lists/*
+          WORKDIR /chawrt
+          EOF
 
-      - name: Prepare configuration (optional diff check)
-        run: |
-          # 可选：检查配置是否被正确加载
-          make defconfig
+          # 构建镜像
+          docker build -t chawrt-builder .
 
-      - name: Build firmware
-        run: |
-          make -j$(nproc) V=s
+          # 启动后台 keep-alive
+          while true; do echo "🐳 Docker build running... $(date)"; sleep 300; done &
+          KEEPALIVE_PID=$!
 
-      - name: Find and list firmware output
-        id: find_firmware
+          # 运行容器，挂载当前目录和缓存目录
+          docker run --rm \
+            -v "$(pwd)":/chawrt \
+            -w /chawrt \
+            --cpus="3" \
+            --memory="6g" \
+            chawrt-builder \
+            bash -c "
+              cp x86.config .config && \
+              ./scripts/feeds update -a && \
+              ./scripts/feeds install -a && \
+              JOBS=\$(nproc) && [ \$JOBS -gt 4 ] && JOBS=4; \
+              make -j\$JOBS V=s
+            "
+
+          kill $KEEPALIVE_PID || true
+
+      - name: Find and upload firmware
+        id: find_fw
         run: |
-          FW_DIR=$(find bin/targets -type d -name "*" | grep -v "packages" | head -n1)
+          FW_DIR=$(find bin/targets -type d 2>/dev/null | grep -v packages | head -n1)
           if [ -z "$FW_DIR" ]; then
-            echo "No firmware output directory found!"
             exit 1
           fi
-          echo "Firmware directory: $FW_DIR"
-          ls -lh "$FW_DIR"
           echo "fw_dir=$FW_DIR" >> $GITHUB_ENV
+          ls -lh "$FW_DIR"
 
-      - name: Upload firmware as artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chawrt-firmware
+          name: ChaWrt-Docker-Firmware
           path: ${{ env.fw_dir }}
           retention-days: 7
